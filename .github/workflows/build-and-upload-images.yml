@@ -1,0 +1,196 @@
+name: Build and Upload Images
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '10 13 * * *'
+
+permissions:
+  contents: write
+  actions: write # 需要此权限来取消 Workflow
+
+jobs:
+  build:
+    name: Build OpenWrt
+    runs-on: ubuntu-24.04
+
+    steps:
+      # 1. 先检出代码，确保 workspace 存在，且后续对 VERSION 的修改基于当前仓库
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 如果后续 build.sh 需要 git 历史，设为 0；否则设为 1 加快速度
+
+      # 2. 检查上游更新 (优化版：使用 API 或 ls-remote，避免 clone)
+      - name: Check Upstream Tags
+        id: check
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Checking upstream tags..."
+          
+          # 使用 GitHub CLI API 获取最新 Tag，速度极快且包含日期信息
+          # 过滤掉 RC 版本 (如果需要 RC，去掉 grep -v rc)
+          LATEST_TAG_JSON=$(gh api graphql -f query='
+            query {
+              repository(owner: "openwrt", name: "openwrt") {
+                refs(refPrefix: "refs/tags/", first: 1, orderBy: {field: TAG_COMMIT_DATE, direction: DESC}) {
+                  nodes {
+                    name
+                    target {
+                      ... on Commit {
+                        committedDate
+                      }
+                      ... on Tag {
+                        target {
+                          ... on Commit {
+                            committedDate
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }' -q .data.repository.refs.nodes[0])
+
+          TAG_NAME=$(echo "$LATEST_TAG_JSON" | jq -r .name)
+          TAG_DATE=$(echo "$LATEST_TAG_JSON" | jq -r '.target.committedDate // .target.target.committedDate')
+          
+          echo "Latest Tag: $TAG_NAME"
+          echo "Tag Date: $TAG_DATE"
+
+          # 转换日期为时间戳
+          TAG_TIMESTAMP=$(date -d "$TAG_DATE" +%s)
+          NOW_TIMESTAMP=$(date +%s)
+          DIFF=$((NOW_TIMESTAMP - TAG_TIMESTAMP))
+
+          # 判断逻辑 (24小时 = 86400秒)
+          if [ "$DIFF" -gt 86400 ]; then
+            echo "Result: Tag is older than 24h. Skipping."
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "Result: New tag found within 24h."
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            # 写入文件供后续步骤提交
+            echo "${TAG_NAME}" > VERSION
+          fi
+
+      # 3. 如果不需要构建，直接取消 (Fail Fast)
+      - name: Cancel Run if No Update
+        if: github.event_name == 'schedule' && steps.check.outputs.should_build == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.notice('No new tags in the last 24 hours. Cancelling workflow.');
+            await github.rest.actions.cancelWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId
+            });
+            // 等待取消生效
+            await new Promise(r => setTimeout(r, 60000));
+      
+      - name: Set Tag
+        run: |
+          TAG_NAME=$(cat VERSION)
+          echo "Current Tag: ${TAG_NAME}"
+          echo "OPENWRT_TAG=${TAG_NAME}" >> $GITHUB_ENV
+
+      # 4. 清理磁盘 (仅在确认要构建时运行，节省时间)
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        if: github.event_name == 'workflow_dispatch' || steps.check.outputs.should_build == 'true'
+        with:
+          # 针对 OpenWrt 编译优化清理策略
+          android: true
+          dotnet: true
+          haskell: true
+          docker-images: true
+          tool-cache: true
+          swap-storage: false # 内存够大(7GB+)通常不需要swap，关掉可以加快清理速度
+
+      # 5. 配置 QEMU
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # 6. 安装依赖
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl wget sudo qemu-user-static build-essential
+
+      # 7. 执行构建
+      - name: Run build script
+        run: |
+          chmod +x build.sh
+          ./build.sh
+        env:
+          # 将检测到的 TAG 传给脚本，脚本里可以用 $OPENWRT_TAG 获取
+          OPENWRT_TAG: ${{ env.OPENWRT_TAG }}
+
+      # 8. 准备 Release 元数据
+      - name: Prepare Release MetaData
+        id: metadata
+        if: success()
+        run: |
+          # 注意：这里的 ./openwrt 路径取决于 build.sh 将源码下载到了哪里
+          if [ -d "./openwrt" ]; then
+             cd ./openwrt
+             VERSION=$(git describe --tags --exact-match 2>/dev/null || git describe --tags --abbrev=0)
+             cd ..
+          else
+             # 如果目录不存在，使用之前检测到的 Tag 或默认值
+             VERSION="${{ env.OPENWRT_TAG }}"
+             [ -z "$VERSION" ] && VERSION="Unknown"
+          fi
+          
+          DATE=$(date +%Y%m%d)
+          TAG_NAME="${VERSION}-${DATE}"
+          RELEASE_NAME="OpenWrt ${VERSION} Build ${DATE}"
+          
+          echo "release_tag=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "release_name=$RELEASE_NAME" >> $GITHUB_OUTPUT
+          
+          echo "release_commit_log<<EOF" >> $GITHUB_OUTPUT
+          if [ -d "./openwrt" ]; then
+            git -C ./openwrt log -1 --date=format:'%Y-%m-%d %H:%M:%S' --format="[%h](https://github.com/openwrt/openwrt/commit/%H) (%cd) by %an: %s" >> $GITHUB_OUTPUT
+          else
+             echo "Build from ${VERSION}" >> $GITHUB_OUTPUT
+          fi
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+          echo "time=$(date +'%H:%M:%S')" >> $GITHUB_OUTPUT
+
+      # 9. 上传 Artifacts
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-images
+          path: openwrt/result/*
+          retention-days: 3
+
+      # 10. 发布 Release
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        if: success()  # 只要构建成功就发布，不仅仅是 main 分支 (根据需求调整)
+        with:
+          tag_name: ${{ steps.metadata.outputs.release_tag }}
+          name: ${{ steps.metadata.outputs.release_name }}
+          files: openwrt/result/*
+          body: |
+            ### Build Information
+            - Target: ${{ env.OPENWRT_TAG }}
+            - Log: ${{ steps.metadata.outputs.release_commit_log }}
+            - Build Time: ${{ steps.metadata.outputs.date }} ${{ steps.metadata.outputs.time }}
+          make_latest: true
+
+      # 11. 提交 VERSION 变更
+      - name: Commit Version Change
+        if: success() && github.event_name == 'schedule'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: update version to ${{ env.OPENWRT_TAG }}"
+          file_pattern: 'VERSION'
