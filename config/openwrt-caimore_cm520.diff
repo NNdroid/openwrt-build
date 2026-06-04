@@ -1,0 +1,138 @@
+CONFIG_TARGET_ath79=y
+CONFIG_TARGET_ath79_generic=y
+CONFIG_TARGET_ath79_generic_DEVICE_caimore_ar9344_cm520_86f=y
+CONFIG_BUSYBOX_CUSTOM=y
+CONFIG_BUSYBOX_CONFIG_DEVMEM=y
+CONFIG_BUSYBOX_CONFIG_STATIC=y
+CONFIG_KERNEL_DEVMEM=y
+CONFIG_NGINX_HTTP_ACCESS=y
+CONFIG_NGINX_HTTP_AUTH_BASIC=y
+CONFIG_NGINX_HTTP_AUTOINDEX=y
+CONFIG_NGINX_HTTP_BROWSER=y
+CONFIG_NGINX_HTTP_CACHE=y
+CONFIG_NGINX_HTTP_CHARSET=y
+CONFIG_NGINX_HTTP_EMPTY_GIF=y
+CONFIG_NGINX_HTTP_FASTCGI=y
+CONFIG_NGINX_HTTP_GEO=y
+CONFIG_NGINX_HTTP_GZIP=y
+CONFIG_NGINX_HTTP_GZIP_STATIC=y
+CONFIG_NGINX_HTTP_LIMIT_CONN=y
+CONFIG_NGINX_HTTP_LIMIT_REQ=y
+CONFIG_NGINX_HTTP_MAP=y
+CONFIG_NGINX_HTTP_MEMCACHED=y
+CONFIG_NGINX_HTTP_PROXY=y
+CONFIG_NGINX_HTTP_REFERER=y
+CONFIG_NGINX_HTTP_REWRITE=y
+CONFIG_NGINX_HTTP_SCGI=y
+CONFIG_NGINX_HTTP_SPLIT_CLIENTS=y
+CONFIG_NGINX_HTTP_SSI=y
+CONFIG_NGINX_HTTP_UPSTREAM_HASH=y
+CONFIG_NGINX_HTTP_UPSTREAM_IP_HASH=y
+CONFIG_NGINX_HTTP_UPSTREAM_KEEPALIVE=y
+CONFIG_NGINX_HTTP_UPSTREAM_LEAST_CONN=y
+CONFIG_NGINX_HTTP_USERID=y
+CONFIG_NGINX_HTTP_UWSGI=y
+CONFIG_NGINX_HTTP_V2=y
+CONFIG_NGINX_PCRE=y
+CONFIG_OPENSSL_ENGINE=y
+CONFIG_OPENSSL_PREFER_CHACHA_OVER_GCM=y
+CONFIG_OPENSSL_WITH_ASM=y
+CONFIG_OPENSSL_WITH_CHACHA_POLY1305=y
+CONFIG_OPENSSL_WITH_CMS=y
+CONFIG_OPENSSL_WITH_DEPRECATED=y
+CONFIG_OPENSSL_WITH_ERROR_MESSAGES=y
+CONFIG_OPENSSL_WITH_IDEA=y
+CONFIG_OPENSSL_WITH_MDC2=y
+CONFIG_OPENSSL_WITH_PSK=y
+CONFIG_OPENSSL_WITH_SEED=y
+CONFIG_OPENSSL_WITH_SRP=y
+CONFIG_OPENSSL_WITH_TLS13=y
+CONFIG_OPENSSL_WITH_WHIRLPOOL=y
+CONFIG_PACKAGE_cgi-io=y
+CONFIG_PACKAGE_chat=y
+CONFIG_PACKAGE_comgt=y
+CONFIG_PACKAGE_ip-bridge=y
+CONFIG_PACKAGE_ip-tiny=y
+# CONFIG_PACKAGE_iw is not set
+# CONFIG_PACKAGE_kmod-ath is not set
+# CONFIG_PACKAGE_kmod-ath9k is not set
+# CONFIG_PACKAGE_kmod-cfg80211 is not set
+# CONFIG_PACKAGE_kmod-crypto-aead is not set
+# CONFIG_PACKAGE_kmod-crypto-ccm is not set
+# CONFIG_PACKAGE_kmod-crypto-cmac is not set
+# CONFIG_PACKAGE_kmod-crypto-ctr is not set
+# CONFIG_PACKAGE_kmod-crypto-gcm is not set
+# CONFIG_PACKAGE_kmod-crypto-gf128 is not set
+# CONFIG_PACKAGE_kmod-crypto-ghash is not set
+# CONFIG_PACKAGE_kmod-crypto-hmac is not set
+CONFIG_PACKAGE_kmod-crypto-kpp=y
+CONFIG_PACKAGE_kmod-crypto-lib-chacha20=y
+CONFIG_PACKAGE_kmod-crypto-lib-chacha20poly1305=y
+CONFIG_PACKAGE_kmod-crypto-lib-curve25519=y
+CONFIG_PACKAGE_kmod-crypto-lib-poly1305=y
+# CONFIG_PACKAGE_kmod-crypto-manager is not set
+# CONFIG_PACKAGE_kmod-crypto-null is not set
+# CONFIG_PACKAGE_kmod-crypto-rng is not set
+# CONFIG_PACKAGE_kmod-crypto-seqiv is not set
+# CONFIG_PACKAGE_kmod-crypto-sha3 is not set
+# CONFIG_PACKAGE_kmod-crypto-sha512 is not set
+CONFIG_PACKAGE_kmod-iptunnel=y
+# CONFIG_PACKAGE_kmod-mac80211 is not set
+# CONFIG_PACKAGE_kmod-random-core is not set
+CONFIG_PACKAGE_kmod-udptunnel4=y
+CONFIG_PACKAGE_kmod-udptunnel6=y
+# CONFIG_PACKAGE_kmod-usb-ohci is not set
+CONFIG_PACKAGE_kmod-vxlan=y
+CONFIG_PACKAGE_kmod-wireguard=y
+CONFIG_PACKAGE_libcap=y
+CONFIG_PACKAGE_libiwinfo=y
+CONFIG_PACKAGE_libiwinfo-data=y
+CONFIG_PACKAGE_liblucihttp=y
+CONFIG_PACKAGE_liblucihttp-ucode=y
+CONFIG_PACKAGE_libopenssl=y
+CONFIG_PACKAGE_libstdcpp=y
+CONFIG_PACKAGE_libuuid=y
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_luci-app-firewall=y
+CONFIG_PACKAGE_luci-app-package-manager=y
+CONFIG_PACKAGE_luci-base=y
+CONFIG_PACKAGE_luci-lib-uqr=y
+CONFIG_PACKAGE_luci-light=y
+CONFIG_PACKAGE_luci-mod-admin-full=y
+CONFIG_PACKAGE_luci-mod-network=y
+CONFIG_PACKAGE_luci-mod-status=y
+CONFIG_PACKAGE_luci-mod-system=y
+CONFIG_PACKAGE_luci-nginx=y
+CONFIG_PACKAGE_luci-proto-3g=y
+CONFIG_PACKAGE_luci-proto-ipv6=y
+CONFIG_PACKAGE_luci-proto-ppp=y
+CONFIG_PACKAGE_luci-proto-vxlan=y
+CONFIG_PACKAGE_luci-proto-wireguard=y
+CONFIG_PACKAGE_luci-theme-bootstrap=y
+CONFIG_PACKAGE_luci-theme-openwrt-2020=y
+CONFIG_PACKAGE_nginx-mod-luci=y
+CONFIG_PACKAGE_nginx-mod-ubus=y
+CONFIG_PACKAGE_nginx-ssl=y
+CONFIG_PACKAGE_nginx-ssl-util=y
+CONFIG_PACKAGE_resolveip=y
+CONFIG_PACKAGE_rpcd=y
+CONFIG_PACKAGE_rpcd-mod-file=y
+CONFIG_PACKAGE_rpcd-mod-iwinfo=y
+CONFIG_PACKAGE_rpcd-mod-luci=y
+CONFIG_PACKAGE_rpcd-mod-rrdns=y
+CONFIG_PACKAGE_rpcd-mod-ucode=y
+# CONFIG_PACKAGE_ucode-mod-digest is not set
+CONFIG_PACKAGE_ucode-mod-html=y
+CONFIG_PACKAGE_ucode-mod-log=y
+CONFIG_PACKAGE_ucode-mod-math=y
+CONFIG_PACKAGE_uhttpd=y
+CONFIG_PACKAGE_uhttpd-mod-ubus=y
+# CONFIG_PACKAGE_usb-modeswitch is not set
+CONFIG_PACKAGE_uwsgi=y
+CONFIG_PACKAGE_uwsgi-cgi-plugin=y
+CONFIG_PACKAGE_uwsgi-luci-support=y
+CONFIG_PACKAGE_uwsgi-syslog-plugin=y
+CONFIG_PACKAGE_vxlan=y
+# CONFIG_PACKAGE_wifi-scripts is not set
+CONFIG_PACKAGE_wireguard-tools=y
+# CONFIG_PACKAGE_wireless-regdb is not set

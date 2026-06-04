@@ -1,0 +1,203 @@
+From 374aaca6abb379d34e83c3ace12c4e56020566cb Mon Sep 17 00:00:00 2001
+From: Your Name <you@example.com>
+Date: Thu, 4 Jun 2026 21:01:55 +0800
+Subject: [PATCH] Add custom Caimore CM520 board support with Longsung U9300C
+ modem patch
+
+---
+ .../ath79/dts/ar9344_caimore_cm520_86f.dts    | 102 ++++++++++++++++++
+ target/linux/ath79/image/common-z-caimore.mk  |  22 ++++
+ target/linux/ath79/image/generic.mk           |   1 +
+ .../999-usb-serial-add-longsung-u9300c.patch  |  30 ++++++
+ 4 files changed, 155 insertions(+)
+ create mode 100644 target/linux/ath79/dts/ar9344_caimore_cm520_86f.dts
+ create mode 100644 target/linux/ath79/image/common-z-caimore.mk
+ create mode 100644 target/linux/ath79/patches-6.12/999-usb-serial-add-longsung-u9300c.patch
+
+diff --git a/target/linux/ath79/dts/ar9344_caimore_cm520_86f.dts b/target/linux/ath79/dts/ar9344_caimore_cm520_86f.dts
+new file mode 100644
+index 0000000000..323c38f019
+--- /dev/null
++++ b/target/linux/ath79/dts/ar9344_caimore_cm520_86f.dts
+@@ -0,0 +1,102 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include "ar9344.dtsi"
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++
++/ {
++	model = "Caimore AR9344 4G LTE Router (CM520-86F)";
++	compatible = "caimore,ar9344-cm520-86f", "qca,ar9344";
++
++	aliases {
++		label-mac-device = &eth0;
++	};
++
++	keys {
++		compatible = "gpio-keys";
++		reset {
++			linux,code = <KEY_RESTART>;
++			gpios = <&gpio 16 GPIO_ACTIVE_LOW>;
++			debounce-interval = <60>;
++		};
++	};
++
++};
++
++&ref {
++	clock-frequency = <40000000>;
++};
++
++&spi {
++	status = "okay";
++
++	flash@0 {
++		compatible = "jedec,spi-nor";
++		reg = <0>;
++		spi-max-frequency = <33000000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			uboot: partition@0 {
++				label = "u-boot";
++				reg = <0x000000 0x020000>;
++				read-only;
++			};
++
++			partition@20000 {
++				/* TP-Link 格式相容性 */
++				compatible = "tplink,firmware";
++				label = "firmware";
++				reg = <0x020000 0xfd0000>;
++			};
++
++			partition@ff0000 {
++				label = "art";
++				reg = <0xff0000 0x010000>;
++				read-only;
++			};
++		};
++	};
++};
++
++&usb {
++	status = "okay";
++};
++
++&usb_phy {
++	status = "okay";
++};
++
++/* ---------------- 物理閹割區 ---------------- */
++&wmac {
++	status = "disabled";
++};
++
++&pcie {
++	status = "disabled";
++};
++
++&mdio0 {
++	status = "okay";
++};
++
++&mdio1 {
++	status = "okay";
++};
++
++&eth0 {
++	status = "disabled";
++};
++
++&eth1 {
++	status = "okay";
++
++	gmac-config {
++		device = <&gmac>;
++		switch-only-mode = <1>;
++		switch-phy-swap = <0>;
++	};
++};
+diff --git a/target/linux/ath79/image/common-z-caimore.mk b/target/linux/ath79/image/common-z-caimore.mk
+new file mode 100644
+index 0000000000..0e1926a5ea
+--- /dev/null
++++ b/target/linux/ath79/image/common-z-caimore.mk
+@@ -0,0 +1,22 @@
++define Device/caimore_ar9344_cm520_86f
++  # 完美繼承 WDR3500 的底層打包邏輯 (包含正確的 Kernel Load Address 和 TP-Link Header)
++  $(Device/tplink_tl-wdr3500-v1)
++  
++  # 覆寫為你的專屬資訊
++  DEVICE_VENDOR := Caimore
++  DEVICE_MODEL := AR9344 4G LTE Router (CM520-86F)
++  DEVICE_DTS := ar9344_caimore_cm520_86f
++  
++  # 強制覆寫容量為 16M (破解 WDR3500 原本的 8M 限制)
++  IMAGE_SIZE := 16192k
++  TPLINK_FLASHLAYOUT := 16Mlzma
++  
++  # 塞入 4G 驅動與 LuCI
++  DEVICE_PACKAGES := \
++    kmod-usb-core kmod-usb2 kmod-usb-ohci \
++    kmod-usb-serial kmod-usb-serial-wwan kmod-usb-serial-option \
++    kmod-usb-net kmod-usb-net-qmi-wwan kmod-usb-net-cdc-mbim kmod-usb-net-rndis \
++    usb-modeswitch usbutils \
++    modemmanager luci-proto-modemmanager
++endef
++TARGET_DEVICES += caimore_ar9344_cm520_86f
+diff --git a/target/linux/ath79/image/generic.mk b/target/linux/ath79/image/generic.mk
+index c5eb5895e6..017eafc0d5 100644
+--- a/target/linux/ath79/image/generic.mk
++++ b/target/linux/ath79/image/generic.mk
+@@ -5,6 +5,7 @@ include ./common-senao.mk
+ include ./common-tp-link.mk
+ include ./common-yuncore.mk
+ include ./common-ubnt.mk
++include ./common-z-caimore.mk
+ 
+ DEVICE_VARS += ADDPATTERN_ID ADDPATTERN_VERSION
+ DEVICE_VARS += KERNEL_INITRAMFS_PREFIX DAP_SIGNATURE
+diff --git a/target/linux/ath79/patches-6.12/999-usb-serial-add-longsung-u9300c.patch b/target/linux/ath79/patches-6.12/999-usb-serial-add-longsung-u9300c.patch
+new file mode 100644
+index 0000000000..2f2e579b19
+--- /dev/null
++++ b/target/linux/ath79/patches-6.12/999-usb-serial-add-longsung-u9300c.patch
+@@ -0,0 +1,30 @@
++--- a/drivers/net/usb/qmi_wwan.c
+++++ b/drivers/net/usb/qmi_wwan.c
++@@ -1515,6 +1515,7 @@ static const struct usb_device_id produc
++ 	{QMI_GOBI_DEVICE(0x1199, 0x901b)},	/* Sierra Wireless MC7770 */
++ 	{QMI_GOBI_DEVICE(0x12d1, 0x14f1)},	/* Sony Gobi 3000 Composite */
++ 	{QMI_GOBI_DEVICE(0x1410, 0xa021)},	/* Foxconn Gobi 3000 Modem device (Novatel E396) */
+++	{QMI_GOBI_DEVICE(0x1c9e, 0x9b3c)},	/* Longsun U9003C */
++ 
++ 	{ }					/* END */
++ };
++--- a/drivers/usb/serial/option.c
+++++ b/drivers/usb/serial/option.c
++@@ -626,6 +626,9 @@ static void option_instat_callback(struc
++ #define UNISOC_PRODUCT_UIS7720			0x4064
++ /* Luat Air72*U series based on UNISOC UIS8910 uses UNISOC's vendor ID */
++ #define LUAT_PRODUCT_AIR720U			0x4e00
+++/*U9300*/
+++#define LONGSUNG_VENDOR_ID            0x1c9e
+++#define LONGSUNG_U9300_PRODUCT_ID     0x9b3c
++ 
++ /* Device flags */
++ 
++@@ -2532,6 +2535,7 @@ static const struct usb_device_id option
++ 	{ USB_DEVICE_INTERFACE_CLASS(0x1bbb, 0x0640, 0xff),			/* TCL IK512 ECM */
++ 	  .driver_info = NCTRL(3) },
++ 	{ USB_DEVICE_INTERFACE_CLASS(0x2949, 0x8700, 0xff) },			/* Neoway N723-EA */
+++	{ USB_DEVICE_INTERFACE_CLASS(LONGSUNG_VENDOR_ID, LONGSUNG_U9300_PRODUCT_ID, 0xff),  .driver_info = RSVD(4) },
++ 	{ } /* Terminating entry */
++ };
++ MODULE_DEVICE_TABLE(usb, option_ids);
+-- 
+2.53.0
+
