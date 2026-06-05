@@ -64,21 +64,23 @@ apply_versioned_patches() {
         return 0
     fi
 
+    # 提前计算通配版本号，保证打印信息完整
+    local wildcard_version="$current_version"
+    if [[ "$current_version" =~ ^([vV]?[0-9]+\.[0-9]+)\. ]]; then
+        wildcard_version="${BASH_REMATCH[1]}.x"
+    fi
+
     echo -e "正在扫描补丁..."
     echo -e "  - 根目录: ${YELLOW}$patch_root_base${NC}"
     echo -e "  - 目标版本: ${YELLOW}$current_version${NC}"
+    echo -e "  - 通配版本: ${YELLOW}$wildcard_version${NC}"
+    echo "------------------------------------------------"
 
-    # 2. 查找所有 .diff 文件
+    # 2. 查找所有 .diff 和 .patch 文件
     while IFS= read -r patch_file; do
         
         # 获取文件所在的目录
         local full_dir=$(dirname "$patch_file")
-
-        # --- 智能提取通配版本号 ---
-        local wildcard_version="$current_version"
-        if [[ "$current_version" =~ ^([vV]?[0-9]+\.[0-9]+)\. ]]; then
-            wildcard_version="${BASH_REMATCH[1]}.x"
-        fi
 
         # --- 核心路径逻辑开始 ---
 
@@ -87,21 +89,21 @@ apply_versioned_patches() {
             continue
         fi
 
-        ((count++))
-
-        # 计算 Target Root
-        local temp_path="${full_dir#$patch_root_base/}"
-
-        # 无论匹配到哪个后缀，都能正确截断并计算出相对目录
-        local target_dir="${temp_path%/archive/$current_version}"
-        target_dir="${target_dir%/archive/$wildcard_version}"
-
-        # --- 核心路径逻辑结束 ---
-
-        # 如果截取后为空，说明目标就是根目录
-        if [ -z "$target_dir" ]; then
-            target_dir="."
+        # 采用更鲁棒的切分策略：先切除版本后缀，再剥离 userpatches 前缀
+        local target_dir="$full_dir"
+        if [[ "$target_dir" == *"/archive/$current_version" ]]; then
+            target_dir="${target_dir%/archive/$current_version}"
+        elif [[ "$target_dir" == *"/archive/$wildcard_version" ]]; then
+            target_dir="${target_dir%/archive/$wildcard_version}"
         fi
+        
+        # 如果切除后缀后等于补丁根目录，说明补丁就在最外层，目标即为 OpenWrt 根目录 (.)
+        if [ "$target_dir" = "$patch_root_base" ]; then
+            target_dir="."
+        else
+            target_dir="${target_dir#$patch_root_base/}"
+        fi
+        # --- 核心路径逻辑结束 ---
 
         # 3. 检查目标目录是否存在
         if [ ! -d "$target_dir" ]; then
@@ -109,39 +111,72 @@ apply_versioned_patches() {
             continue
         fi
 
-        echo -e "应用: ${BLUE}$(basename "$patch_file")${NC}"
-        echo -e "  └─ 映射: .../archive/[版本] -> $target_dir"
+        ((count++)) 
 
-        # 4. 执行补丁
-        if patch -p1 -d "$target_dir" --batch --forward --no-backup-if-mismatch < "$patch_file" > /dev/null 2>&1; then
-            echo -e "  └─ 状态: ${GREEN}成功${NC}"
-        else
-            # 容错重试 -p0
-            if patch -p0 -d "$target_dir" --batch --forward --no-backup-if-mismatch < "$patch_file" > /dev/null 2>&1; then
+        echo -e "应用补丁: ${BLUE}$(basename "$patch_file")${NC}"
+        echo -e "  └─ 映射目录: .../archive/[版本] -> $target_dir"
+
+        # 4. 执行补丁并捕获详细信息 (🌟 核心展示升级)
+        local patch_out
+        local exit_status
+        
+        # 尝试 -p1 模式
+        patch_out=$(patch -p1 -d "$target_dir" --batch --forward --no-backup-if-mismatch < "$patch_file" 2>&1)
+        exit_status=$?
+        
+        if [ $exit_status -ne 0 ]; then
+            # 如果 -p1 失败，尝试 -p0 容错模式
+            patch_out=$(patch -p0 -d "$target_dir" --batch --forward --no-backup-if-mismatch < "$patch_file" 2>&1)
+            exit_status=$?
+            if [ $exit_status -eq 0 ]; then
                 echo -e "  └─ 状态: ${GREEN}成功 (-p0)${NC}"
-            else
-                echo -e "  └─ 状态: ${RED}失败${NC}"
-                ((fail_count++))
             fi
+        else
+            echo -e "  └─ 状态: ${GREEN}成功${NC}"
+        fi
+
+        # 🌟 解析并美化打印补丁具体修改了哪些文件
+        if [ $exit_status -eq 0 ]; then
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                if [[ "$line" == "patching file "* ]]; then
+                    # 提取实际被修改的文件路径
+                    local modified_file="${line#patching file }"
+                    echo -e "     ${GREEN}├─ [修改/创建]${NC} $modified_file"
+                fi
+            done <<< "$patch_out"
+        else
+            echo -e "  └─ 状态: ${RED}失败${NC}"
+            echo -e "  └─ 错误日志详情:"
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                echo -e "     ${RED}![错误]${NC} $line"
+            done <<< "$patch_out"
+            ((fail_count++))
         fi
         echo "------------------------------------------------"
 
-    done < <(find "$patch_root_base" -type f -name "*.diff" | sort)
+    done < <(find "$patch_root_base" -type f \( -name "*.diff" -o -name "*.patch" \) | sort)
 
     # 总结
     if [ "$count" -eq 0 ]; then
-        echo "未找到匹配精确版本 '$current_version' 或通配版本 '$wildcard_version' 的补丁。"
+        echo "未找到或未成功应用匹配精确版本 '$current_version' 或通配版本 '$wildcard_version' 的补丁。"
     elif [ "$fail_count" -eq 0 ]; then
-        echo -e "${GREEN}完成: $count 个补丁应用成功。${NC}"
+        echo -e "${GREEN}完成: $count 个补丁文件全部成功应用。${NC}"
     else
-        echo -e "${RED}完成: $count 个已处理, $fail_count 个失败。${NC}"
+        echo -e "${RED}完成: 共处理 $count 个补丁, 其中 $fail_count 个应用失败。${NC}"
         return 1
     fi
 }
 
 function update_kernel_config() {
-    # 1. 设置目标路径 (默认为 target/linux/x86/64/config-*)
-    local target_path="${1:-target/linux/x86/64/config-*}"
+    # 1. 设置目标路径
+    local target_path="$1"
+    
+    if [ -z "$target_path" ]; then
+        echo "❌ 错误: update_kernel_config 必须指定目标路径"
+        return 1
+    fi
     
     # 2. 定义配置内容
     local config_content
@@ -173,14 +208,14 @@ CONFIG_KPROBE_EVENTS=y
 CONFIG_BPF_EVENTS=y
 EOF
 
-    echo "正在处理内核配置..."
+    echo "正在处理内核配置 [${target_path}]..."
 
     shopt -s nullglob
     local files=($target_path)
     
     if [ ${#files[@]} -eq 0 ]; then
-        echo "⚠️  错误: 未找到匹配的文件: $target_path"
-        return 1
+        echo "⚠️  提示: 未找到匹配的内核配置文件: $target_path (可能该 target 尚未准备好)"
+        return 0
     fi
 
     for file in "${files[@]}"; do
@@ -217,12 +252,15 @@ sudo apt update
 sudo apt install ed build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3-setuptools rsync swig unzip zlib1g-dev file wget lsof yq jq -y
 
 if [ -d "openwrt" ]; then
-    echo "Directory 'build' exists. Updating..."
+    echo "Directory 'openwrt' exists. Cleaning and updating..."
     cd openwrt
+    git reset --hard HEAD
+    git clean -fdx
     git checkout master
-    git pull --force origin master
+    git fetch origin master
+    git reset --hard origin/master
 else
-    echo "Directory 'build' not found. Cloning..."
+    echo "Directory 'openwrt' not found. Cloning..."
     git clone https://github.com/openwrt/openwrt
     cd openwrt
 fi
@@ -235,16 +273,17 @@ else
   echo "OPENWRT_TAG not set, fetching latest tag..."
   USED_TAG=$(cat ../VERSION)
 fi
-echo "OPENWRT_TAG=$USED_TAG" >> "$GITHUB_ENV"
+
+if [ -n "$GITHUB_ENV" ]; then
+    echo "OPENWRT_TAG=$USED_TAG" >> "$GITHUB_ENV"
+fi
+
 echo "已更新 TAG 为: $USED_TAG"
 git checkout -f "${USED_TAG}"
 git clean -fdx
 echo "Reset to tag ${USED_TAG}"
 
 apply_versioned_patches "../userpatches" "${USED_TAG}"
-check_error
-
-update_kernel_config
 check_error
 
 if [ -d "package/kernel/nf_deaf" ]; then
@@ -304,7 +343,13 @@ function move_targets_to_result_dir() {
 # 执行编译队列
 # =========================================================
 
+# 1. 编译原来的 X86 固件
+update_kernel_config "target/linux/x86/64/config-*"
 build_openwrt x86_64
+
+# 2. 编译 Caimore CM520 专属固件
+update_kernel_config "target/linux/ath79/config-*"
 build_openwrt caimore_cm520
 
+# 3. 最后一次性收集所有生成的固件
 move_targets_to_result_dir
