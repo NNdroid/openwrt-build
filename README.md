@@ -70,17 +70,21 @@ openwrt/result/<target>/
 
 ## GitHub Actions
 
-The workflow runs daily and also supports manual dispatch.
+The workflow is `.github/workflows/build_and_release.yml`.
 
-For scheduled runs it:
+It supports three trigger modes:
+
+- **Manual (`workflow_dispatch`)**: choose an OpenWrt tag and target(s); build results are uploaded to **Actions Artifacts only**. It does **not** create a GitHub Release and does **not** modify `VERSION`.
+- **Push to `main`**: validates the current repository changes by building and uploading **Actions Artifacts only**. It does **not** create a GitHub Release.
+- **Scheduled**: checks the newest stable upstream tag; only when it is newer than `VERSION` does it build both targets, publish a GitHub Release, and update `VERSION`.
+
+For stable-version resolution it:
 
 1. Lists stable upstream tags.
 2. Filters tags to `vMAJOR.MINOR.PATCH`.
 3. Uses semantic version ordering (`sort -V`) instead of tag commit dates.
-4. Skips the build when `VERSION` already matches the newest stable tag.
+4. Skips scheduled builds when `VERSION` already matches the newest stable tag.
 5. Builds x86_64 and CM520 in separate parallel jobs.
-6. Publishes firmware plus selected custom kernel/package artifacts.
-7. Updates `VERSION` only after the build succeeds.
 
 This avoids the old failure mode where a later-created maintenance tag such as `v24.10.x` could incorrectly be treated as newer than `v25.12.x`.
 

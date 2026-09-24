@@ -10,7 +10,7 @@ on:
       - "config/**"
       - "userpatches/**"
       - "third_party/**"
-      - ".github/workflows/build-and-upload-images.yml"
+      - ".github/workflows/build_and_release.yml"
   workflow_dispatch:
     inputs:
       openwrt_tag:
@@ -102,6 +102,7 @@ jobs:
           echo "should_build=${SHOULD_BUILD}" >> "${GITHUB_OUTPUT}"
           echo "matrix=${MATRIX}" >> "${GITHUB_OUTPUT}"
 
+          echo "Event: ${EVENT_NAME}"
           echo "Current VERSION: ${CURRENT}"
           echo "Resolved stable tag: ${TAG}"
           echo "Targets: ${MATRIX}"
@@ -143,17 +144,17 @@ jobs:
       - name: Upload firmware and custom packages
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-${{ matrix.target }}
+          name: openwrt-${{ matrix.target }}-${{ needs.resolve.outputs.tag }}
           path: openwrt/result/${{ matrix.target }}/
           if-no-files-found: error
           retention-days: 7
 
   release:
-    name: Publish release
+    name: Publish scheduled release
     needs:
       - resolve
       - build
-    if: needs.resolve.outputs.should_build == 'true' && success()
+    if: github.event_name == 'schedule' && needs.resolve.outputs.should_build == 'true' && success()
     runs-on: ubuntu-24.04
 
     steps:
@@ -165,7 +166,7 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: openwrt-*
+          pattern: openwrt-*-${{ needs.resolve.outputs.tag }}
           path: release
           merge-multiple: false
 
@@ -187,7 +188,7 @@ jobs:
           files: |
             release/**/*
           body: |
-            Automated OpenWrt build based on `${{ needs.resolve.outputs.tag }}`.
+            Automated scheduled OpenWrt build based on `${{ needs.resolve.outputs.tag }}`.
 
             Default networking features:
             - TCP Brutal v2 + `brutalctl`
@@ -198,8 +199,7 @@ jobs:
 
             Third-party sources are pinned in `third_party/versions.env` for reproducible builds.
 
-      - name: Update VERSION after successful build
-        if: github.ref == 'refs/heads/main' && needs.resolve.outputs.tag != needs.resolve.outputs.current
+      - name: Update VERSION after successful scheduled release
         env:
           NEW_VERSION: ${{ needs.resolve.outputs.tag }}
         shell: bash
