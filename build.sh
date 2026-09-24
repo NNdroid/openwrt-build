@@ -1,355 +1,320 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
-check_error() {
-    # 1. 第一步必须紧接着捕获上一条命令的返回值 $?
-    local exit_code=$?
-    
-    # 2. 获取用户传入的自定义错误提示（如果没有传入，则使用默认提示）
-    local msg="${1:-"Command execution failed"}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OPENWRT_DIR="${ROOT_DIR}/openwrt"
+RESULT_ROOT="${OPENWRT_DIR}/result"
+THIRD_PARTY_ENV="${ROOT_DIR}/third_party/versions.env"
 
-    # 3. 判断返回值
-    if [ "$exit_code" -ne 0 ]; then
-        # 4. 将错误信息输出到标准错误 (stderr)
-        echo "Error: $msg (Exit code: $exit_code)" >&2
-        
-        # 5. 退出脚本，并返回同样的错误码
-        exit "$exit_code"
-    fi
+log()  { printf '\033[1;34m[openwrt-build]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[openwrt-build][warn]\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31m[openwrt-build][error]\033[0m %s\n' "$*" >&2; exit 1; }
+
+trap 'die "command failed at line ${LINENO}: ${BASH_COMMAND}"' ERR
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
-merge_dirs() {
-    if [ "$#" -ne 2 ]; then
-        echo "Usage: merge_dirs <source_dir> <target_dir>"
-        return 1
+install_host_dependencies() {
+    [[ "${SKIP_HOST_DEPS:-0}" == "1" ]] && return 0
+    command -v apt-get >/dev/null 2>&1 || {
+        warn "apt-get not found; skipping automatic host dependency installation"
+        return 0
+    }
+
+    local -a sudo_cmd=()
+    if [[ "$(id -u)" -ne 0 ]]; then
+        require_cmd sudo
+        sudo_cmd=(sudo)
     fi
 
-    local SRC_DIR="$1"
-    local DST_DIR="$2"
+    log "Installing build dependencies"
+    "${sudo_cmd[@]}" apt-get update
+    DEBIAN_FRONTEND=noninteractive "${sudo_cmd[@]}" apt-get install -y \
+        build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+        gettext git libelf-dev libncurses-dev libssl-dev python3-dev \
+        python3-pyelftools python3-setuptools rsync swig unzip zlib1g-dev \
+        file wget curl jq ca-certificates patch xz-utils zstd
+}
 
-    if [ ! -d "$SRC_DIR" ]; then
-        echo "Error: source directory not found: $SRC_DIR"
-        return 1
+read_openwrt_tag() {
+    local tag="${OPENWRT_TAG:-}"
+    if [[ -z "$tag" ]]; then
+        [[ -f "${ROOT_DIR}/VERSION" ]] || die "VERSION file is missing"
+        tag="$(tr -d '[:space:]' < "${ROOT_DIR}/VERSION")"
+    fi
+    [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid stable OpenWrt tag: $tag"
+    printf '%s\n' "$tag"
+}
+
+prepare_openwrt_source() {
+    local tag="$1"
+    log "Preparing OpenWrt source at ${tag}"
+
+    if [[ ! -d "${OPENWRT_DIR}/.git" ]]; then
+        rm -rf "${OPENWRT_DIR}"
+        mkdir -p "${OPENWRT_DIR}"
+        git -C "${OPENWRT_DIR}" init
+        git -C "${OPENWRT_DIR}" remote add origin https://github.com/openwrt/openwrt.git
     fi
 
-    mkdir -p "$DST_DIR" || return 1
+    git -C "${OPENWRT_DIR}" reset --hard
+    git -C "${OPENWRT_DIR}" clean -fdx
+    git -C "${OPENWRT_DIR}" fetch --force --depth=1 origin \
+        "refs/tags/${tag}:refs/tags/${tag}"
+    git -C "${OPENWRT_DIR}" checkout --detach -f "refs/tags/${tag}"
+    git -C "${OPENWRT_DIR}" reset --hard "refs/tags/${tag}"
+    git -C "${OPENWRT_DIR}" clean -fdx
+}
 
-    rsync -av \
-        --chmod=Du+rwx,Dgo+rx,Fu+rw,Fgo+r \
-        "$SRC_DIR"/ "$DST_DIR"/
+apply_one_patch() {
+    local patch_file="$1"
+    local target_dir="$2"
+
+    [[ -d "$target_dir" ]] || die "patch target directory does not exist: $target_dir"
+    log "Applying $(basename "$patch_file") -> ${target_dir#${OPENWRT_DIR}/}"
+
+    if patch -p1 -d "$target_dir" --dry-run --batch --forward < "$patch_file" >/dev/null 2>&1; then
+        patch -p1 -d "$target_dir" --batch --forward --no-backup-if-mismatch < "$patch_file"
+    elif patch -p0 -d "$target_dir" --dry-run --batch --forward < "$patch_file" >/dev/null 2>&1; then
+        patch -p0 -d "$target_dir" --batch --forward --no-backup-if-mismatch < "$patch_file"
+    else
+        die "patch does not apply cleanly: $patch_file"
+    fi
 }
 
 apply_versioned_patches() {
-    # 参数1: 补丁根目录 (默认 userpatches)
-    local patch_root_base="${1:-userpatches}"
-    # 参数2: 当前编译版本号 (必填，例如 v25.12.4)
-    local current_version="$2"
+    local patch_root="${ROOT_DIR}/userpatches"
+    local version="$1"
+    local wildcard="$version"
+    local rel target matched=0 candidate
 
-    local count=0
-    local fail_count=0
-    
-    # 颜色定义
-    local GREEN='\033[0;32m'
-    local RED='\033[0;31m'
-    local BLUE='\033[0;34m'
-    local YELLOW='\033[0;33m'
-    local NC='\033[0m'
-
-    # 1. 基础检查
-    if [ -z "$current_version" ]; then
-        echo -e "${RED}错误: 未指定版本号 (例如 v25.12.4)${NC}"
-        return 1
+    [[ -d "$patch_root" ]] || return 0
+    if [[ "$version" =~ ^(v[0-9]+\.[0-9]+)\.[0-9]+$ ]]; then
+        wildcard="${BASH_REMATCH[1]}.x"
     fi
 
-    if [ ! -d "$patch_root_base" ]; then
-        return 0
-    fi
-
-    # 提前计算通配版本号，保证打印信息完整
-    local wildcard_version="$current_version"
-    if [[ "$current_version" =~ ^([vV]?[0-9]+\.[0-9]+)\. ]]; then
-        wildcard_version="${BASH_REMATCH[1]}.x"
-    fi
-
-    echo -e "正在扫描补丁..."
-    echo -e "  - 根目录: ${YELLOW}$patch_root_base${NC}"
-    echo -e "  - 目标版本: ${YELLOW}$current_version${NC}"
-    echo -e "  - 通配版本: ${YELLOW}$wildcard_version${NC}"
-    echo "------------------------------------------------"
-
-    # 2. 查找所有 .diff 和 .patch 文件
-    while IFS= read -r patch_file; do
-        
-        # 获取文件所在的目录
-        local full_dir=$(dirname "$patch_file")
-
-        # --- 核心路径逻辑开始 ---
-
-        # 允许匹配精确版本号 (v25.12.4) 或通配版本号 (v25.12.x)
-        if [[ "$full_dir" != *"/archive/$current_version" ]] && [[ "$full_dir" != *"/archive/$wildcard_version" ]]; then
-            continue
-        fi
-
-        # 采用更鲁棒的切分策略：先切除版本后缀，再剥离 userpatches 前缀
-        local target_dir="$full_dir"
-        if [[ "$target_dir" == *"/archive/$current_version" ]]; then
-            target_dir="${target_dir%/archive/$current_version}"
-        elif [[ "$target_dir" == *"/archive/$wildcard_version" ]]; then
-            target_dir="${target_dir%/archive/$wildcard_version}"
-        fi
-        
-        # 如果切除后缀后等于补丁根目录，说明补丁就在最外层，目标即为 OpenWrt 根目录 (.)
-        if [ "$target_dir" = "$patch_root_base" ]; then
-            target_dir="."
-        else
-            target_dir="${target_dir#$patch_root_base/}"
-        fi
-        # --- 核心路径逻辑结束 ---
-
-        # 3. 检查目标目录是否存在
-        if [ ! -d "$target_dir" ]; then
-            echo -e "${RED}[跳过]${NC} 目标目录不存在: $target_dir (补丁: $(basename "$patch_file"))"
-            continue
-        fi
-
-        ((count++)) 
-
-        echo -e "应用补丁: ${BLUE}$(basename "$patch_file")${NC}"
-        echo -e "  └─ 映射目录: .../archive/[版本] -> $target_dir"
-
-        # 4. 执行补丁并捕获详细信息 (🌟 核心展示升级)
-        local patch_out
-        local exit_status
-        
-        # 尝试 -p1 模式
-        patch_out=$(patch -p1 -d "$target_dir" --batch --forward --no-backup-if-mismatch < "$patch_file" 2>&1)
-        exit_status=$?
-        
-        if [ $exit_status -ne 0 ]; then
-            # 如果 -p1 失败，尝试 -p0 容错模式
-            patch_out=$(patch -p0 -d "$target_dir" --batch --forward --no-backup-if-mismatch < "$patch_file" 2>&1)
-            exit_status=$?
-            if [ $exit_status -eq 0 ]; then
-                echo -e "  └─ 状态: ${GREEN}成功 (-p0)${NC}"
+    while IFS= read -r -d '' patch_file; do
+        rel="${patch_file#${patch_root}/}"
+        target=""
+        for candidate in "$version" "$wildcard"; do
+            if [[ "$rel" == "archive/${candidate}/"* ]]; then
+                target="${OPENWRT_DIR}"
+                break
+            elif [[ "$rel" == *"/archive/${candidate}/"* ]]; then
+                target="${OPENWRT_DIR}/${rel%%/archive/${candidate}/*}"
+                break
             fi
-        else
-            echo -e "  └─ 状态: ${GREEN}成功${NC}"
-        fi
+        done
+        [[ -n "$target" ]] || continue
+        apply_one_patch "$patch_file" "$target"
+        matched=$((matched + 1))
+    done < <(find "$patch_root" -type f \( -name '*.patch' -o -name '*.diff' \) -print0 | sort -z)
 
-        # 🌟 解析并美化打印补丁具体修改了哪些文件
-        if [ $exit_status -eq 0 ]; then
-            while IFS= read -r line; do
-                [ -z "$line" ] && continue
-                if [[ "$line" == "patching file "* ]]; then
-                    # 提取实际被修改的文件路径
-                    local modified_file="${line#patching file }"
-                    echo -e "     ${GREEN}├─ [修改/创建]${NC} $modified_file"
-                fi
-            done <<< "$patch_out"
-        else
-            echo -e "  └─ 状态: ${RED}失败${NC}"
-            echo -e "  └─ 错误日志详情:"
-            while IFS= read -r line; do
-                [ -z "$line" ] && continue
-                echo -e "     ${RED}![错误]${NC} $line"
-            done <<< "$patch_out"
-            ((fail_count++))
-        fi
-        echo "------------------------------------------------"
-
-    done < <(find "$patch_root_base" -type f \( -name "*.diff" -o -name "*.patch" \) | sort)
-
-    # 总结
-    if [ "$count" -eq 0 ]; then
-        echo "未找到或未成功应用匹配精确版本 '$current_version' 或通配版本 '$wildcard_version' 的补丁。"
-    elif [ "$fail_count" -eq 0 ]; then
-        echo -e "${GREEN}完成: $count 个补丁文件全部成功应用。${NC}"
-    else
-        echo -e "${RED}完成: 共处理 $count 个补丁, 其中 $fail_count 个应用失败。${NC}"
-        return 1
-    fi
+    log "Applied ${matched} version-matched patch(es) for ${version}"
 }
 
-function update_kernel_config() {
-    # 1. 设置目标路径
-    local target_path="$1"
-    
-    if [ -z "$target_path" ]; then
-        echo "❌ 错误: update_kernel_config 必须指定目标路径"
-        return 1
-    fi
-    
-    # 2. 定义配置内容
-    local config_content
-    read -r -d '' config_content << 'EOF'
-CONFIG_INET=y
-CONFIG_IPV6=y
-CONFIG_MPTCP=y
-CONFIG_MPTCP_KUNIT_TESTS=y
-CONFIG_MPTCP_IPV6=y
-CONFIG_NET_MPTCP=y
-CONFIG_MPTCP_PM=y
-CONFIG_MPTCP_FULLMESH=y
-CONFIG_MPTCP_NDIAG=y
-CONFIG_BPF=y
-CONFIG_BPF_SYSCALL=y
-CONFIG_BPF_JIT=y
-CONFIG_CGROUPS=y
-CONFIG_KPROBES=y
-CONFIG_NET_INGRESS=y
-CONFIG_NET_EGRESS=y
-CONFIG_NET_SCH_INGRESS=y
-CONFIG_NET_CLS_BPF=y
-CONFIG_NET_CLS_ACT=y
-CONFIG_BPF_STREAM_PARSER=y
-CONFIG_DEBUG_INFO=y
-# CONFIG_DEBUG_INFO_REDUCED is not set
-CONFIG_DEBUG_INFO_BTF=y
-CONFIG_KPROBE_EVENTS=y
-CONFIG_BPF_EVENTS=y
-EOF
+clone_pinned() {
+    local url="$1"
+    local ref="$2"
+    local dest="$3"
 
-    echo "正在处理内核配置 [${target_path}]..."
+    git clone --quiet --filter=blob:none --no-checkout "$url" "$dest"
+    git -C "$dest" checkout --quiet --detach "$ref"
+}
 
-    shopt -s nullglob
-    local files=($target_path)
-    
-    if [ ${#files[@]} -eq 0 ]; then
-        echo "⚠️  提示: 未找到匹配的内核配置文件: $target_path (可能该 target 尚未准备好)"
-        return 0
-    fi
+inject_third_party_packages() {
+    [[ -f "$THIRD_PARTY_ENV" ]] || die "missing ${THIRD_PARTY_ENV}"
+    # shellcheck disable=SC1090
+    source "$THIRD_PARTY_ENV"
 
-    for file in "${files[@]}"; do
-        echo "正在更新文件: $file"
-        
-        while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            
-            local key=""
-            if [[ "$line" =~ ^CONFIG_([^=]+)= ]]; then
-                key="${BASH_REMATCH[1]}"
-            elif [[ "$line" =~ ^#\ CONFIG_([a-zA-Z0-9_]+)\ is\ not\ set ]]; then
-                key="${BASH_REMATCH[1]}"
-            else
-                continue
-            fi
+    local tmp
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' RETURN
 
-            if grep -qE "^#? ?CONFIG_${key}([= ]|$)" "$file"; then
-                sed -i "s|^.*CONFIG_${key}[= ].*$|${line}|" "$file"
-            else
-                if [ -n "$(tail -c 1 "$file")" ]; then
-                    echo "" >> "$file"
-                fi
-                echo "$line" >> "$file"
-            fi
-            
-        done <<< "$config_content"
-        
-        echo "✅ 完成: $file"
+    log "Injecting TCP Brutal ${TCP_BRUTAL_REF}"
+    rm -rf "${OPENWRT_DIR}/package/kernel/tcp-brutal"
+    mkdir -p "${OPENWRT_DIR}/package/kernel/tcp-brutal"
+    cp -a "${ROOT_DIR}/third_party/tcp-brutal/." \
+        "${OPENWRT_DIR}/package/kernel/tcp-brutal/"
+
+    log "Injecting nf_deaf OpenWrt package ${NF_DEAF_OPENWRT_REF}"
+    clone_pinned "$NF_DEAF_OPENWRT_REPO" "$NF_DEAF_OPENWRT_REF" "$tmp/nf_deaf-openwrt"
+    rm -rf "${OPENWRT_DIR}/package/kernel/nf_deaf"
+    mkdir -p "${OPENWRT_DIR}/package/kernel/nf_deaf"
+    cp -a "$tmp/nf_deaf-openwrt/." "${OPENWRT_DIR}/package/kernel/nf_deaf/"
+    rm -rf "${OPENWRT_DIR}/package/kernel/nf_deaf/.git"
+
+    log "Injecting AmneziaWG OpenWrt packages ${AMNEZIAWG_OPENWRT_REF}"
+    clone_pinned "$AMNEZIAWG_OPENWRT_REPO" "$AMNEZIAWG_OPENWRT_REF" "$tmp/awg-openwrt"
+    rm -rf "${OPENWRT_DIR}/package/extra/amneziawg"
+    mkdir -p "${OPENWRT_DIR}/package/extra/amneziawg"
+    for pkg in kmod-amneziawg amneziawg-tools luci-proto-amneziawg; do
+        [[ -d "$tmp/awg-openwrt/$pkg" ]] || die "AmneziaWG package missing: $pkg"
+        cp -a "$tmp/awg-openwrt/$pkg" "${OPENWRT_DIR}/package/extra/amneziawg/"
+    done
+
+    rm -rf "$tmp"
+    trap - RETURN
+}
+
+update_feeds() {
+    log "Updating OpenWrt feeds"
+    (
+        cd "${OPENWRT_DIR}"
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+    )
+}
+
+
+merge_kconfig_fragment() {
+    local config_file="$1"
+    local fragment="$2"
+    local line key
+
+    [[ -f "$fragment" ]] || die "missing config fragment: $fragment"
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -z "$line" || "$line" == \#\#* ]] && continue
+
+        if [[ "$line" =~ ^CONFIG_([A-Za-z0-9_]+)= ]]; then
+            key="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ ^#\ CONFIG_([A-Za-z0-9_]+)\ is\ not\ set$ ]]; then
+            key="${BASH_REMATCH[1]}"
+        else
+            printf '%s\n' "$line" >> "$config_file"
+            continue
+        fi
+
+        sed -i -E "/^CONFIG_${key}=|^# CONFIG_${key} is not set$/d" "$config_file"
+        printf '%s\n' "$line" >> "$config_file"
+    done < "$fragment"
+}
+
+validate_feature_config() {
+    local target="$1"
+    local -a required=(
+        CONFIG_PACKAGE_kmod-brutal
+        CONFIG_PACKAGE_brutalctl
+        CONFIG_PACKAGE_kmod-tcp-bbr
+        CONFIG_PACKAGE_kmod-mpls
+        CONFIG_PACKAGE_kmod-nf_deaf
+        CONFIG_PACKAGE_kmod-amneziawg
+        CONFIG_PACKAGE_amneziawg-tools
+        CONFIG_PACKAGE_luci-proto-amneziawg
+    )
+    local key
+
+    for key in "${required[@]}"; do
+        grep -qx "${key}=y" "${OPENWRT_DIR}/.config" ||
+            die "${target}: required feature was not selected after defconfig: ${key}"
     done
 }
 
-sudo apt update
-sudo apt install ed build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3-setuptools rsync swig unzip zlib1g-dev file wget lsof yq jq -y
+collect_results() {
+    local target="$1"
+    local out="${RESULT_ROOT}/${target}"
+    local target_output
 
-if [ -d "openwrt" ]; then
-    echo "Directory 'openwrt' exists. Cleaning and updating..."
-    cd openwrt
-    git reset --hard HEAD
-    git clean -fdx
-    git checkout master
-    git fetch origin master
-    git reset --hard origin/master
-else
-    echo "Directory 'openwrt' not found. Cloning..."
-    git clone https://github.com/openwrt/openwrt
-    cd openwrt
-fi
+    case "$target" in
+        x86_64) target_output="${OPENWRT_DIR}/bin/targets/x86/64" ;;
+        caimore_cm520) target_output="${OPENWRT_DIR}/bin/targets/ath79/generic" ;;
+        *) die "unknown result path for target: $target" ;;
+    esac
 
-USED_TAG=$(git tag --sort=-creatordate | head -n 1)
-if [ -n "${OPENWRT_TAG}" ]; then
-  USED_TAG="${OPENWRT_TAG}"
-  echo "Using explicit tag: ${USED_TAG}"
-else
-  echo "OPENWRT_TAG not set, fetching latest tag..."
-  USED_TAG=$(cat ../VERSION)
-fi
+    [[ -d "$target_output" ]] || die "${target}: expected output directory missing: $target_output"
 
-if [ -n "$GITHUB_ENV" ]; then
-    echo "OPENWRT_TAG=$USED_TAG" >> "$GITHUB_ENV"
-fi
+    rm -rf "$out"
+    mkdir -p "$out/packages"
 
-echo "已更新 TAG 为: $USED_TAG"
-git checkout -f "${USED_TAG}"
-git clean -fdx
-echo "Reset to tag ${USED_TAG}"
+    find "$target_output" -maxdepth 1 -type f \
+        \( -name 'openwrt*manifest' -o -name 'openwrt*.json' -o \
+           -name 'openwrt*.tar.gz' -o -name 'openwrt*.img.gz' -o \
+           -name 'openwrt*.bin' -o -name 'sha256sums' \) \
+        -exec cp -f {} "$out/" \;
 
-apply_versioned_patches "../userpatches" "${USED_TAG}"
-check_error
+    find "${OPENWRT_DIR}/bin" -type f \
+        \( -name '*brutal*.apk' -o -name '*nf_deaf*.apk' -o \
+           -name '*amneziawg*.apk' -o -name '*tcp-bbr*.apk' -o \
+           -name '*mpls*.apk' \) \
+        -exec cp -f {} "$out/packages/" \; 2>/dev/null || true
 
-if [ -d "package/kernel/nf_deaf" ]; then
-    git -C package/kernel/nf_deaf pull
-else
-    git clone https://github.com/NNdroid/nf_deaf-openwrt.git package/kernel/nf_deaf
-fi
-echo "pull nf_deaf"
-git clone https://github.com/Slava-Shchipunov/awg-openwrt package/awg-openwrt
-echo "pull amneziawg"
+    {
+        echo "openwrt_tag=${USED_TAG}"
+        echo "openwrt_commit=$(git -C "${OPENWRT_DIR}" rev-parse HEAD)"
+        echo "target=${target}"
+        echo "tcp_brutal_ref=${TCP_BRUTAL_REF}"
+        echo "nf_deaf_openwrt_ref=${NF_DEAF_OPENWRT_REF}"
+        echo "amneziawg_openwrt_ref=${AMNEZIAWG_OPENWRT_REF}"
+    } > "$out/BUILDINFO.txt"
 
-./scripts/feeds update -a
-check_error
-./scripts/feeds install -a
-check_error
-echo "feeds update & feeds install"
-
-function build_openwrt() {
-    if [ $# -lt 1 ]; then
-        echo "❌ 错误: 缺少参数。"
-        echo "用法: build_openwrt <target_name>"
-        return 1
-    fi
-
-    local target=$1
-    local config_path="../config/openwrt-${target}.diff"
-
-    if [ ! -f "$config_path" ]; then
-        echo "❌ 错误: 找不到配置文件: $config_path"
-        return 1
-    fi
-
-    echo "🚀 正在为目标 [${target}] 准备构建..."
-
-    cp "$config_path" .config
-    yes "" | make defconfig
-        check_error
-    make dirclean
-        check_error
-    make download
-        check_error
-    make -j$(($(nproc) + 1)) V=sc
-        check_error
+    [[ -n "$(find "$out" -maxdepth 1 -type f -name 'openwrt*' -print -quit)" ]] ||
+        die "${target}: no firmware images were collected"
 }
 
-function move_targets_to_result_dir() {
-    mkdir -p result
-    find bin/targets/ -type f \
-        \( -name 'openwrt*manifest' -o -name 'openwrt*.tar.gz' -o -name 'openwrt*.img.gz' -o -name 'openwrt*.bin' \) \
-        -print | while read -r file; do
-            echo "Moving $file ..."
-            cp "$file" result/
-        done
+build_target() {
+    local target="$1"
+    local config="${ROOT_DIR}/config/openwrt-${target}.diff"
+
+    [[ -f "$config" ]] || die "missing target config: $config"
+    log "Configuring target ${target}"
+
+    cp "$config" "${OPENWRT_DIR}/.config"
+    merge_kconfig_fragment "${OPENWRT_DIR}/.config" \
+        "${ROOT_DIR}/config/common-networking.config"
+    (
+        cd "${OPENWRT_DIR}"
+        make defconfig
+    )
+    validate_feature_config "$target"
+
+    log "Downloading sources for ${target}"
+    (
+        cd "${OPENWRT_DIR}"
+        make download -j"$(nproc)"
+    )
+
+    log "Building ${target}"
+    (
+        cd "${OPENWRT_DIR}"
+        make -j"$(( $(nproc) + 1 ))" V=sc
+    )
+    collect_results "$target"
 }
 
-# =========================================================
-# 执行编译队列
-# =========================================================
+main() {
+    install_host_dependencies
+    require_cmd git
+    require_cmd patch
+    require_cmd rsync
 
-# 1. 编译原来的 X86 固件
-update_kernel_config "target/linux/x86/64/config-*"
-build_openwrt x86_64
+    USED_TAG="$(read_openwrt_tag)"
+    export USED_TAG
+    [[ -n "${GITHUB_ENV:-}" ]] && echo "OPENWRT_TAG=${USED_TAG}" >> "$GITHUB_ENV"
 
-# 2. 编译 Caimore CM520 专属固件
-update_kernel_config "target/linux/ath79/config-*"
-build_openwrt caimore_cm520
+    prepare_openwrt_source "$USED_TAG"
+    apply_versioned_patches "$USED_TAG"
+    inject_third_party_packages
+    update_feeds
 
-# 3. 最后一次性收集所有生成的固件
-move_targets_to_result_dir
+    case "${BUILD_TARGET:-all}" in
+        x86_64|caimore_cm520)
+            build_target "${BUILD_TARGET}"
+            ;;
+        all)
+            build_target x86_64
+            log "Switching architecture; cleaning target-specific build output"
+            (cd "${OPENWRT_DIR}" && make dirclean)
+            inject_third_party_packages
+            update_feeds
+            build_target caimore_cm520
+            ;;
+        *)
+            die "unsupported BUILD_TARGET=${BUILD_TARGET}; use all, x86_64 or caimore_cm520"
+            ;;
+    esac
+}
+
+main "$@"

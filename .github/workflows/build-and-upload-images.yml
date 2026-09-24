@@ -1,196 +1,214 @@
-name: Build and Upload Images
+name: Build and Release OpenWrt
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "build.sh"
+      - "VERSION"
+      - "config/**"
+      - "userpatches/**"
+      - "third_party/**"
+      - ".github/workflows/build-and-upload-images.yml"
   workflow_dispatch:
+    inputs:
+      openwrt_tag:
+        description: "Stable OpenWrt tag; leave blank for latest stable"
+        required: false
+        type: string
+        default: ""
+      targets:
+        description: "Firmware target"
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - x86_64
+          - caimore_cm520
   schedule:
-    - cron: '10 13 * * *'
+    - cron: "10 13 * * *"
 
 permissions:
   contents: write
-  actions: write # 需要此权限来取消 Workflow
+
+concurrency:
+  group: openwrt-build-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build OpenWrt
+  resolve:
+    name: Resolve stable OpenWrt version
     runs-on: ubuntu-24.04
-
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      current: ${{ steps.resolve.outputs.current }}
+      should_build: ${{ steps.resolve.outputs.should_build }}
+      matrix: ${{ steps.resolve.outputs.matrix }}
     steps:
-      # 1. 先检出代码，确保 workspace 存在，且后续对 VERSION 的修改基于当前仓库
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # 如果后续 build.sh 需要 git 历史，设为 0；否则设为 1 加快速度
 
-      # 2. 检查上游更新 (优化版：使用 API 或 ls-remote，避免 clone)
-      - name: Check Upstream Tags
-        id: check
-        if: github.event_name == 'schedule'
+      - name: Resolve version and targets
+        id: resolve
         env:
-          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ github.event.inputs.openwrt_tag || '' }}
+          REQUESTED_TARGETS: ${{ github.event.inputs.targets || 'all' }}
+          EVENT_NAME: ${{ github.event_name }}
+        shell: bash
         run: |
-          echo "Checking upstream tags..."
-          
-          # 使用 GitHub CLI API 获取最新 Tag，速度极快且包含日期信息
-          # 过滤掉 RC 版本 (如果需要 RC，去掉 grep -v rc)
-          LATEST_TAG_JSON=$(gh api graphql -f query='
-            query {
-              repository(owner: "openwrt", name: "openwrt") {
-                refs(refPrefix: "refs/tags/", first: 1, orderBy: {field: TAG_COMMIT_DATE, direction: DESC}) {
-                  nodes {
-                    name
-                    target {
-                      ... on Commit {
-                        committedDate
-                      }
-                      ... on Tag {
-                        target {
-                          ... on Commit {
-                            committedDate
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }' -q .data.repository.refs.nodes[0])
+          set -Eeuo pipefail
 
-          TAG_NAME=$(echo "$LATEST_TAG_JSON" | jq -r .name)
-          TAG_DATE=$(echo "$LATEST_TAG_JSON" | jq -r '.target.committedDate // .target.target.committedDate')
-          
-          echo "Latest Tag: $TAG_NAME"
-          echo "Tag Date: $TAG_DATE"
+          CURRENT="$(tr -d '[:space:]' < VERSION)"
 
-          # 转换日期为时间戳
-          TAG_TIMESTAMP=$(date -d "$TAG_DATE" +%s)
-          NOW_TIMESTAMP=$(date +%s)
-          DIFF=$((NOW_TIMESTAMP - TAG_TIMESTAMP))
-
-          # 判断逻辑 (24小时 = 86400秒)
-          if [ "$DIFF" -gt 86400 ]; then
-            echo "Result: Tag is older than 24h. Skipping."
-            echo "should_build=false" >> $GITHUB_OUTPUT
+          if [[ -n "${REQUESTED_TAG}" ]]; then
+            TAG="${REQUESTED_TAG}"
           else
-            echo "Result: New tag found within 24h."
-            echo "should_build=true" >> $GITHUB_OUTPUT
-            # 写入文件供后续步骤提交
-            echo "${TAG_NAME}" > VERSION
+            TAG="$(
+              git ls-remote --tags --refs https://github.com/openwrt/openwrt.git 'v[0-9]*' |
+                awk '{ sub("refs/tags/", "", $2); print $2 }' |
+                grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' |
+                sort -V |
+                tail -n1
+            )"
           fi
 
-      # 3. 如果不需要构建，直接取消 (Fail Fast)
-      - name: Cancel Run if No Update
-        if: github.event_name == 'schedule' && steps.check.outputs.should_build == 'false'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            core.notice('No new tags in the last 24 hours. Cancelling workflow.');
-            await github.rest.actions.cancelWorkflowRun({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              run_id: context.runId
-            });
-            // 等待取消生效
-            await new Promise(r => setTimeout(r, 60000));
-      
-      - name: Set Tag
-        run: |
-          TAG_NAME=$(cat VERSION)
-          echo "Current Tag: ${TAG_NAME}"
-          echo "OPENWRT_TAG=${TAG_NAME}" >> $GITHUB_ENV
+          [[ "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::Could not resolve a stable OpenWrt tag"
+            exit 1
+          }
 
-      # 4. 清理磁盘 (仅在确认要构建时运行，节省时间)
-      - name: Free Disk Space
-        uses: jlumbroso/free-disk-space@v1.3.1
-        if: github.event_name == 'workflow_dispatch' || steps.check.outputs.should_build == 'true'
+          case "${REQUESTED_TARGETS}" in
+            all)
+              MATRIX='{"target":["x86_64","caimore_cm520"]}'
+              ;;
+            x86_64|caimore_cm520)
+              MATRIX="{\"target\":[\"${REQUESTED_TARGETS}\"]}"
+              ;;
+            *)
+              echo "::error::Unsupported target: ${REQUESTED_TARGETS}"
+              exit 1
+              ;;
+          esac
+
+          SHOULD_BUILD=true
+          if [[ "${EVENT_NAME}" == "schedule" && "${TAG}" == "${CURRENT}" ]]; then
+            SHOULD_BUILD=false
+          fi
+
+          echo "current=${CURRENT}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "should_build=${SHOULD_BUILD}" >> "${GITHUB_OUTPUT}"
+          echo "matrix=${MATRIX}" >> "${GITHUB_OUTPUT}"
+
+          echo "Current VERSION: ${CURRENT}"
+          echo "Resolved stable tag: ${TAG}"
+          echo "Targets: ${MATRIX}"
+          echo "Build: ${SHOULD_BUILD}"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: resolve
+    if: needs.resolve.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.resolve.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          # 针对 OpenWrt 编译优化清理策略
+          fetch-depth: 1
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
           android: true
           dotnet: true
           haskell: true
           docker-images: true
           tool-cache: true
-          swap-storage: false # 内存够大(7GB+)通常不需要swap，关掉可以加快清理速度
+          swap-storage: false
 
-      # 5. 配置 QEMU
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      # 6. 安装依赖
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git curl wget sudo qemu-user-static build-essential
-
-      # 7. 执行构建
-      - name: Run build script
+      - name: Build firmware
+        env:
+          OPENWRT_TAG: ${{ needs.resolve.outputs.tag }}
+          BUILD_TARGET: ${{ matrix.target }}
         run: |
           chmod +x build.sh
           ./build.sh
-        env:
-          # 将检测到的 TAG 传给脚本，脚本里可以用 $OPENWRT_TAG 获取
-          OPENWRT_TAG: ${{ env.OPENWRT_TAG }}
 
-      # 8. 准备 Release 元数据
-      - name: Prepare Release MetaData
-        id: metadata
-        if: success()
-        run: |
-          # 注意：这里的 ./openwrt 路径取决于 build.sh 将源码下载到了哪里
-          if [ -d "./openwrt" ]; then
-             cd ./openwrt
-             VERSION=$(git describe --tags --exact-match 2>/dev/null || git describe --tags --abbrev=0)
-             cd ..
-          else
-             # 如果目录不存在，使用之前检测到的 Tag 或默认值
-             VERSION="${{ env.OPENWRT_TAG }}"
-             [ -z "$VERSION" ] && VERSION="Unknown"
-          fi
-          
-          DATE=$(date +%Y%m%d)
-          TAG_NAME="${VERSION}-${DATE}"
-          RELEASE_NAME="OpenWrt ${VERSION} Build ${DATE}"
-          
-          echo "release_tag=$TAG_NAME" >> $GITHUB_OUTPUT
-          echo "release_name=$RELEASE_NAME" >> $GITHUB_OUTPUT
-          
-          echo "release_commit_log<<EOF" >> $GITHUB_OUTPUT
-          if [ -d "./openwrt" ]; then
-            git -C ./openwrt log -1 --date=format:'%Y-%m-%d %H:%M:%S' --format="[%h](https://github.com/openwrt/openwrt/commit/%H) (%cd) by %an: %s" >> $GITHUB_OUTPUT
-          else
-             echo "Build from ${VERSION}" >> $GITHUB_OUTPUT
-          fi
-          echo "EOF" >> $GITHUB_OUTPUT
-          
-          echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
-          echo "time=$(date +'%H:%M:%S')" >> $GITHUB_OUTPUT
-
-      # 9. 上传 Artifacts
-      - name: Upload Artifacts
+      - name: Upload firmware and custom packages
         uses: actions/upload-artifact@v4
         with:
-          name: built-images
-          path: openwrt/result/*
-          retention-days: 3
+          name: openwrt-${{ matrix.target }}
+          path: openwrt/result/${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 7
 
-      # 10. 发布 Release
-      - name: Release
+  release:
+    name: Publish release
+    needs:
+      - resolve
+      - build
+    if: needs.resolve.outputs.should_build == 'true' && success()
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: openwrt-*
+          path: release
+          merge-multiple: false
+
+      - name: Prepare release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          DATE="$(date -u +%Y%m%d)"
+          echo "release_tag=${{ needs.resolve.outputs.tag }}-${DATE}-build.${GITHUB_RUN_NUMBER}" >> "${GITHUB_OUTPUT}"
+          echo "release_name=OpenWrt ${{ needs.resolve.outputs.tag }} build ${DATE}.${GITHUB_RUN_NUMBER}" >> "${GITHUB_OUTPUT}"
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
-        if: success()  # 只要构建成功就发布，不仅仅是 main 分支 (根据需求调整)
         with:
-          tag_name: ${{ steps.metadata.outputs.release_tag }}
-          name: ${{ steps.metadata.outputs.release_name }}
-          files: openwrt/result/*
-          body: |
-            ### Build Information
-            - Target: ${{ env.OPENWRT_TAG }}
-            - Log: ${{ steps.metadata.outputs.release_commit_log }}
-            - Build Time: ${{ steps.metadata.outputs.date }} ${{ steps.metadata.outputs.time }}
+          tag_name: ${{ steps.meta.outputs.release_tag }}
+          name: ${{ steps.meta.outputs.release_name }}
           make_latest: true
+          files: |
+            release/**/*
+          body: |
+            Automated OpenWrt build based on `${{ needs.resolve.outputs.tag }}`.
 
-      # 11. 提交 VERSION 变更
-      - name: Commit Version Change
-        if: success() && github.event_name == 'schedule'
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore: update version to ${{ env.OPENWRT_TAG }}"
-          file_pattern: 'VERSION'
+            Default networking features:
+            - TCP Brutal v2 + `brutalctl`
+            - BBR
+            - MPLS routing / IP tunnel / GSO
+            - nf_deaf
+            - AmneziaWG 3.1 + LuCI protocol support
+
+            Third-party sources are pinned in `third_party/versions.env` for reproducible builds.
+
+      - name: Update VERSION after successful build
+        if: github.ref == 'refs/heads/main' && needs.resolve.outputs.tag != needs.resolve.outputs.current
+        env:
+          NEW_VERSION: ${{ needs.resolve.outputs.tag }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          printf '%s\n' "${NEW_VERSION}" > VERSION
+          git add VERSION
+          git diff --cached --quiet && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: update OpenWrt to ${NEW_VERSION}"
+          git push
