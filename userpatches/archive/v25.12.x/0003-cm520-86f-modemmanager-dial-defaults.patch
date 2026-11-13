@@ -1,0 +1,46 @@
+From: NNdroid <nnroid@users.noreply.github.com>
+Date: Fri, 14 Nov 2026 09:31:00 +0800
+Subject: [PATCH 3/4] ath79: CM520-86F ModemManager dial stability defaults
+
+Ship ModemManager netifd defaults tuned for unattended 4G operation on
+first boot: ipv4-only bearer (carrier rejects IPv6), auto-retry via
+force_connection, no modem disable on ifdown, 300s registration timeout,
+30s signal polling, and UCI-authoritative initial EPS bearer settings.
+
+Signed-off-by: NNdroid <nnroid@users.noreply.github.com>
+---
+--- a/target/linux/ath79/base-files/etc/uci-defaults/99_cm520_wan4g
++++ b/target/linux/ath79/base-files/etc/uci-defaults/99_cm520_wan4g
+@@ -0,0 +1,32 @@
++#!/bin/sh
++#
++# Caimore CM520-86F: ModemManager 拨号稳定性默认值
++#
++# - iptype=ipv4                电信 LTE 仅允许 IPv4 (ipv4-only-allowed)
++# - init_epsbearer=connection  APN 以 UCI 为准, 修改 APN 后同步到 attach 层
++# - signalrate=30              3s 信号轮询对 560MHz 单核 MIPS 过重
++# - force_connection=1         拨号失败触发接口重启重试, 而非锁死接口
++# - disable_modem=0            ifdown 不关闭模组, 避免 enable/注册慢路径与竞态
++# - timeout=300                漫游注册较慢, 给足超时
++#
++
++model="$(cat /proc/device-tree/model 2>/dev/null)"
++case "${model}" in
++	*Caimore*CM520*) ;;
++	*) exit 0 ;;
++esac
++
++[ "$(uci -q get network.wan_4g.proto)" = "modemmanager" ] || {
++	uci set network.wan_4g=interface
++	uci set network.wan_4g.proto='modemmanager'
++}
++
++uci -q get network.wan_4g.apn >/dev/null || uci set network.wan_4g.apn='ctlte'
++uci set network.wan_4g.iptype='ipv4'
++uci set network.wan_4g.init_epsbearer='connection'
++uci set network.wan_4g.signalrate='30'
++uci set network.wan_4g.force_connection='1'
++uci set network.wan_4g.disable_modem='0'
++uci set network.wan_4g.timeout='300'
++
++uci commit network

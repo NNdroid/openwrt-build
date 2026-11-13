@@ -1,0 +1,30 @@
+From: NNdroid <nnroid@users.noreply.github.com>
+Date: Fri, 14 Nov 2026 09:32:00 +0800
+Subject: [PATCH 4/4] ath79: CM520-86F trim device packages to QMI essentials
+
+Drop USB drivers the Longsung U9300C QMI modem does not use (OHCI is
+unavailable on AR9344, no MBIM/RNDIS modeswitch paths are needed) and add
+watchcat as a network-loss watchdog for unattended deployments.
+
+Signed-off-by: NNdroid <nnroid@users.noreply.github.com>
+---
+--- a/target/linux/ath79/image/common-z-caimore.mk
++++ b/target/linux/ath79/image/common-z-caimore.mk
+@@ -11,12 +11,12 @@
+   IMAGE_SIZE := 16192k
+   TPLINK_FLASHLAYOUT := 16Mlzma
+   
+-  # 塞入 4G 驅動與 LuCI
++  # 塞入 4G 驅動與 LuCI (僅保留 QMI 鏈路所需; AR9344 只有 EHCI)
+   DEVICE_PACKAGES := \
+-    kmod-usb-core kmod-usb2 kmod-usb-ohci \
++    kmod-usb-core kmod-usb2 \
+     kmod-usb-serial kmod-usb-serial-wwan kmod-usb-serial-option \
+-    kmod-usb-net kmod-usb-net-qmi-wwan kmod-usb-net-cdc-mbim kmod-usb-net-rndis \
+-    usb-modeswitch usbutils \
+-    modemmanager luci-proto-modemmanager
++    kmod-usb-net kmod-usb-net-qmi-wwan \
++    usbutils \
++    modemmanager luci-proto-modemmanager watchcat
+ endef
+ TARGET_DEVICES += caimore_ar9344_cm520_86f
