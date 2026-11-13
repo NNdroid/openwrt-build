@@ -49,8 +49,9 @@ CONFIG_OPENSSL_WITH_SRP=y
 CONFIG_OPENSSL_WITH_TLS13=y
 CONFIG_OPENSSL_WITH_WHIRLPOOL=y
 CONFIG_PACKAGE_cgi-io=y
-CONFIG_PACKAGE_chat=y
-CONFIG_PACKAGE_comgt=y
+# CONFIG_PACKAGE_chat is not set
+# CONFIG_PACKAGE_comgt is not set
+CONFIG_PACKAGE_curl=y
 CONFIG_PACKAGE_ip-bridge=y
 CONFIG_PACKAGE_ip-tiny=y
 # CONFIG_PACKAGE_iw is not set
@@ -92,7 +93,8 @@ CONFIG_PACKAGE_liblucihttp-ucode=y
 CONFIG_PACKAGE_libopenssl=y
 CONFIG_PACKAGE_libstdcpp=y
 CONFIG_PACKAGE_libuuid=y
-CONFIG_PACKAGE_luci=y
+# CONFIG_PACKAGE_luci is not set
+# CONFIG_PACKAGE_luci-light is not set
 CONFIG_PACKAGE_luci-app-firewall=y
 CONFIG_PACKAGE_luci-app-package-manager=y
 CONFIG_PACKAGE_luci-base=y
@@ -103,13 +105,14 @@ CONFIG_PACKAGE_luci-mod-network=y
 CONFIG_PACKAGE_luci-mod-status=y
 CONFIG_PACKAGE_luci-mod-system=y
 CONFIG_PACKAGE_luci-nginx=y
-CONFIG_PACKAGE_luci-proto-3g=y
+# CONFIG_PACKAGE_luci-proto-3g is not set
 CONFIG_PACKAGE_luci-proto-ipv6=y
 CONFIG_PACKAGE_luci-proto-ppp=y
 CONFIG_PACKAGE_luci-proto-vxlan=y
 CONFIG_PACKAGE_luci-proto-wireguard=y
 CONFIG_PACKAGE_luci-theme-bootstrap=y
 CONFIG_PACKAGE_luci-theme-openwrt-2020=y
+CONFIG_PACKAGE_nano=y
 CONFIG_PACKAGE_nginx-mod-luci=y
 CONFIG_PACKAGE_nginx-mod-ubus=y
 CONFIG_PACKAGE_nginx-ssl=y
@@ -125,8 +128,8 @@ CONFIG_PACKAGE_rpcd-mod-ucode=y
 CONFIG_PACKAGE_ucode-mod-html=y
 CONFIG_PACKAGE_ucode-mod-log=y
 CONFIG_PACKAGE_ucode-mod-math=y
-CONFIG_PACKAGE_uhttpd=y
-CONFIG_PACKAGE_uhttpd-mod-ubus=y
+# CONFIG_PACKAGE_uhttpd is not set
+# CONFIG_PACKAGE_uhttpd-mod-ubus is not set
 # CONFIG_PACKAGE_usb-modeswitch is not set
 CONFIG_PACKAGE_uwsgi=y
 CONFIG_PACKAGE_uwsgi-cgi-plugin=y
@@ -134,5 +137,6 @@ CONFIG_PACKAGE_uwsgi-luci-support=y
 CONFIG_PACKAGE_uwsgi-syslog-plugin=y
 CONFIG_PACKAGE_vxlan=y
 # CONFIG_PACKAGE_wifi-scripts is not set
+# CONFIG_PACKAGE_wpad-basic-mbedtls is not set
 CONFIG_PACKAGE_wireguard-tools=y
 # CONFIG_PACKAGE_wireless-regdb is not set
