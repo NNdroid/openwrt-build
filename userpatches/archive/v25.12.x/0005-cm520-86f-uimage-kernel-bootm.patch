@@ -1,0 +1,27 @@
+From: NNdroid <nnroid@users.noreply.github.com>
+Date: Fri, 14 Nov 2026 09:33:00 +0800
+Subject: [PATCH 5/5] ath79: CM520-86F wrap kernel in uImage for bootm u-boot
+
+The Caimore CM520-86F u-boot boots the kernel via bootm, so the kernel
+must be wrapped in an uImage instead of the raw LZMA stream that is
+inherited from the TL-WDR3500 device template. The TP-Link v1 header is
+kept so the web recovery still accepts the image.
+
+Signed-off-by: NNdroid <nnroid@users.noreply.github.com>
+---
+--- a/target/linux/ath79/image/common-z-caimore.mk
++++ b/target/linux/ath79/image/common-z-caimore.mk
+@@ -2,6 +2,11 @@
+   # 完美繼承 WDR3500 的底層打包邏輯 (包含正確的 Kernel Load Address 和 TP-Link Header)
+   $(Device/tplink_tl-wdr3500-v1)
+   
++  # Caimore 的 u-boot 以 bootm 啟動，kernel 需包成 uImage 而非裸 LZMA 串流
++  # (保留 TP-Link v1 header 以便 web recovery 仍能接受映像)
++  KERNEL := kernel-bin | append-dtb | lzma | uImage lzma
++  KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma | uImage lzma
++  
+   # 覆寫為你的專屬資訊
+   DEVICE_VENDOR := Caimore
+   DEVICE_MODEL := AR9344 4G LTE Router (CM520-86F)
+-- 
+2.53.0
