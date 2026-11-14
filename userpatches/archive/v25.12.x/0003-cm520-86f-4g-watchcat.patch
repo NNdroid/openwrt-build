@@ -1,0 +1,53 @@
+From: NNdroid <nnroid@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 22:30:00 +0800
+Subject: [PATCH] ath79: CM520-86F 4G module auto-restart watchdog
+
+ModemManager's force_connection retries the dial, but a hung or
+de-registered modem is never reset, leaving the WAN down until manual
+intervention. Override the stock watchcat config (which defaults to
+ping_reboot, i.e. a full device reboot after 6h of no internet) with
+restart_iface mode so a sustained WAN outage automatically restarts
+ModemManager and re-dials the wan_4g interface. Recovery is scoped to
+the 4G interface only and uses best-effort band unlock.
+
+Signed-off-by: NNdroid <nnroid@users.noreply.github.com>
+---
+--- a/target/linux/ath79/base-files/etc/uci-defaults/100_cm520_4g_watchcat
++++ b/target/linux/ath79/base-files/etc/uci-defaults/100_cm520_4g_watchcat
+@@ -0,0 +1,36 @@
++#!/bin/sh
++#
++# Caimore CM520-86F: 4G 模块自动恢复看门狗
++#
++# watchcat 出厂默认是 ping_reboot（断网 6h 后重启整机），对 4G 路由不合适。
++# 这里覆盖为 restart_iface 模式：WAN 持续断连 period 后自动执行
++#   mmcli --set-current-bands=any（若解锁频段）+ modemmanager restart + ifup wan_4g
++# 即"4G 模块自动尝试重启"，配合 99_cm520_wan4g 的 force_connection=1 重试拨号。
++#
++# - period=5m              持续断连 5 分钟后触发一次恢复
++# - pingperiod=30          每 30s 探测一次可达性
++# - pinghosts              国内可达且 ICMP 友好的双 DNS（避开被墙的 1.1.1.1）
++# - interface=@wan_4g      @ 前缀让 watchcat 解析出真实设备（wwan0）绑定 ping
++# - unlockbands=1          恢复时把模组频段锁释放为 any（best-effort，失败无害）
++# - reset_failure_timer=1  恢复后重开失败计时窗口，避免模组注册期反复触发
++#
++
++model="$(cat /proc/device-tree/model 2>/dev/null)"
++case "${model}" in
++	*Caimore*CM520*) ;;
++	*) exit 0 ;;
++esac
++
++# 覆盖 watchcat 出厂默认（ping_reboot -> 重启整机），改为 4G 接口级恢复
++uci -q delete watchcat
++uci set watchcat.watchcat=watchcat
++uci set watchcat.watchcat.mode='restart_iface'
++uci set watchcat.watchcat.period='5m'
++uci set watchcat.watchcat.pingperiod='30'
++uci set watchcat.watchcat.pinghosts='223.5.5.5 114.114.114.114'
++uci set watchcat.watchcat.interface='@wan_4g'
++uci set watchcat.watchcat.mmifacename='wan_4g'
++uci set watchcat.watchcat.unlockbands='1'
++uci set watchcat.watchcat.reset_failure_timer='1'
++uci set watchcat.watchcat.addressfamily='ipv4'
++uci commit watchcat

@@ -6,22 +6,26 @@ Ship ModemManager netifd defaults tuned for unattended 4G operation on
 first boot: ipv4-only bearer (carrier rejects IPv6), auto-retry via
 force_connection, no modem disable on ifdown, 300s registration timeout,
 30s signal polling, and UCI-authoritative initial EPS bearer settings.
+Also pin the modem index and add the interface to the firewall wan zone
+so the 4G WAN gets NAT and lan->wan forwarding out of the box.
 
 Signed-off-by: NNdroid <nnroid@users.noreply.github.com>
 ---
 --- a/target/linux/ath79/base-files/etc/uci-defaults/99_cm520_wan4g
 +++ b/target/linux/ath79/base-files/etc/uci-defaults/99_cm520_wan4g
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,49 @@
 +#!/bin/sh
 +#
 +# Caimore CM520-86F: ModemManager 拨号稳定性默认值
 +#
-+# - iptype=ipv4                电信 LTE 仅允许 IPv4 (ipv4-only-allowed)
++# - device=0                ModemManager 模组索引（唯一 4G 模组），proto 强制必需
++# - iptype=ipv4             电信 LTE 仅允许 IPv4 (ipv4-only-allowed)
 +# - init_epsbearer=connection  APN 以 UCI 为准, 修改 APN 后同步到 attach 层
-+# - signalrate=30              3s 信号轮询对 560MHz 单核 MIPS 过重
-+# - force_connection=1         拨号失败触发接口重启重试, 而非锁死接口
-+# - disable_modem=0            ifdown 不关闭模组, 避免 enable/注册慢路径与竞态
-+# - timeout=300                漫游注册较慢, 给足超时
++# - signalrate=30           信号轮询间隔（秒）, 560MHz 单核 MIPS 不宜过频
++# - force_connection=1      拨号失败触发接口重启重试, 而非锁死接口
++# - disable_modem=0         ifdown 不关闭模组, 避免 enable/注册慢路径与竞态
++# - timeout=300             漫游注册较慢, 给足超时
++# - 防火墙 wan zone         加入 wan_4g 以启用 NAT/masq + lan->wan 转发
 +#
 +
 +model="$(cat /proc/device-tree/model 2>/dev/null)"
@@ -35,6 +39,7 @@ Signed-off-by: NNdroid <nnroid@users.noreply.github.com>
 +	uci set network.wan_4g.proto='modemmanager'
 +}
 +
++uci -q get network.wan_4g.device >/dev/null || uci set network.wan_4g.device='0'
 +uci -q get network.wan_4g.apn >/dev/null || uci set network.wan_4g.apn='ctlte'
 +uci set network.wan_4g.iptype='ipv4'
 +uci set network.wan_4g.init_epsbearer='connection'
@@ -44,3 +49,17 @@ Signed-off-by: NNdroid <nnroid@users.noreply.github.com>
 +uci set network.wan_4g.timeout='300'
 +
 +uci commit network
++
++# 把 wan_4g 加入防火墙 wan zone（NAT/masq + lan->wan 转发）
++uci -q show firewall | grep -q "name='wan'" && {
++	i=0
++	while uci -q get firewall.@zone[$i].name >/dev/null 2>&1; do
++		[ "$(uci get firewall.@zone[$i].name)" = "wan" ] && {
++			uci -q get firewall.@zone[$i].network | grep -q wan_4g ||
++				uci add_list firewall.@zone[$i].network='wan_4g'
++			break
++		}
++		i=$((i + 1))
++	done
++	uci commit firewall
++}
