@@ -1,25 +1,24 @@
-From 374aaca6abb379d34e83c3ace12c4e56020566cb Mon Sep 17 00:00:00 2001
-From: Your Name <you@example.com>
+From: NNdroid <nnroid@users.noreply.github.com>
 Date: Thu, 4 Jun 2026 21:01:55 +0800
-Subject: [PATCH] Add custom Caimore CM520 board support with Longsung U9300C
- modem patch
+Subject: [PATCH] ath79: add Caimore CM520-86F board support (Breed uImage)
 
+The Caimore CM520-86F is an AR9344 4G LTE router whose bootloader is
+Breed (v1.1 r1337). Breed bootm's an uImage from flash offset 0x50000
+and preserves the vendor partition layout. Model the board on that
+layout: 256k u-boot, 64k u-boot-env, 3M kernel (uImage), rootfs, and a
+64k ART at 0xff0000. The kernel is wrapped in an uImage (not the raw
+LZMA stream used by the TL-WDR3500 template) so Breed can boot it.
+
+Also add a Longsung U9300C QMI modem quirk to the USB serial driver.
+
+Signed-off-by: NNdroid <nnroid@users.noreply.github.com>
 ---
- .../ath79/dts/ar9344_caimore_cm520_86f.dts    | 102 ++++++++++++++++++
- target/linux/ath79/image/common-z-caimore.mk  |  22 ++++
- target/linux/ath79/image/generic.mk           |   1 +
- .../999-usb-serial-add-longsung-u9300c.patch  |  30 ++++++
- 4 files changed, 155 insertions(+)
- create mode 100644 target/linux/ath79/dts/ar9344_caimore_cm520_86f.dts
- create mode 100644 target/linux/ath79/image/common-z-caimore.mk
- create mode 100644 target/linux/ath79/patches-6.12/999-usb-serial-add-longsung-u9300c.patch
-
 diff --git a/target/linux/ath79/dts/ar9344_caimore_cm520_86f.dts b/target/linux/ath79/dts/ar9344_caimore_cm520_86f.dts
 new file mode 100644
-index 0000000000..323c38f019
+index 0000000..eda595b
 --- /dev/null
 +++ b/target/linux/ath79/dts/ar9344_caimore_cm520_86f.dts
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,129 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
 +
 +#include "ar9344.dtsi"
@@ -31,7 +30,11 @@ index 0000000000..323c38f019
 +	compatible = "caimore,ar9344-cm520-86f", "qca,ar9344";
 +
 +	aliases {
-+		label-mac-device = &eth0;
++		label-mac-device = &eth1;
++	};
++
++	chosen {
++		bootargs = "console=ttyS0,115200 root=31:3 rootfstype=squashfs";
 +	};
 +
 +	keys {
@@ -62,23 +65,43 @@ index 0000000000..323c38f019
 +			#address-cells = <1>;
 +			#size-cells = <1>;
 +
-+			uboot: partition@0 {
++			partition@0 {
 +				label = "u-boot";
-+				reg = <0x000000 0x020000>;
++				reg = <0x000000 0x040000>;
 +				read-only;
 +			};
 +
-+			partition@20000 {
-+				/* TP-Link 格式相容性 */
-+				compatible = "tplink,firmware";
-+				label = "firmware";
-+				reg = <0x020000 0xfd0000>;
++			partition@40000 {
++				label = "u-boot-env";
++				reg = <0x040000 0x010000>;
++				read-only;
 +			};
 +
-+			partition@ff0000 {
++			/* Breed bootm's the uImage kernel at 0x50000 */
++			partition@50000 {
++				label = "kernel";
++				reg = <0x050000 0x300000>;
++			};
++
++			partition@350000 {
++				label = "rootfs";
++				reg = <0x350000 0xca0000>;
++			};
++
++			art: partition@ff0000 {
 +				label = "art";
 +				reg = <0xff0000 0x010000>;
 +				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					macaddr_art_0: macaddr@0 {
++						reg = <0x0 0x6>;
++					};
++				};
 +			};
 +		};
 +	};
@@ -116,6 +139,9 @@ index 0000000000..323c38f019
 +&eth1 {
 +	status = "okay";
 +
++	nvmem-cells = <&macaddr_art_0>;
++	nvmem-cell-names = "mac-address";
++
 +	gmac-config {
 +		device = <&gmac>;
 +		switch-only-mode = <1>;
@@ -124,34 +150,38 @@ index 0000000000..323c38f019
 +};
 diff --git a/target/linux/ath79/image/common-z-caimore.mk b/target/linux/ath79/image/common-z-caimore.mk
 new file mode 100644
-index 0000000000..0e1926a5ea
+index 0000000..a565e51
 --- /dev/null
 +++ b/target/linux/ath79/image/common-z-caimore.mk
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,26 @@
 +define Device/caimore_ar9344_cm520_86f
-+  # 完美繼承 WDR3500 的底層打包邏輯 (包含正確的 Kernel Load Address 和 TP-Link Header)
-+  $(Device/tplink_tl-wdr3500-v1)
-+  
-+  # 覆寫為你的專屬資訊
++  SOC := ar9344
 +  DEVICE_VENDOR := Caimore
 +  DEVICE_MODEL := AR9344 4G LTE Router (CM520-86F)
 +  DEVICE_DTS := ar9344_caimore_cm520_86f
-+  
-+  # 強制覆寫容量為 16M (破解 WDR3500 原本的 8M 限制)
-+  IMAGE_SIZE := 16192k
-+  TPLINK_FLASHLAYOUT := 16Mlzma
-+  
-+  # 塞入 4G 驅動與 LuCI
++
++  # Breed u-boot bootm's the kernel, so wrap it in an uImage (not raw LZMA)
++  KERNEL := kernel-bin | append-dtb | lzma | uImage lzma
++  KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma | uImage lzma
++
++  # Breed layout: firmware partition is 0x50000-0xff0000 (16000k)
++  IMAGE_SIZE := 16000k
++  KERNEL_SIZE := 3072k
++
++  IMAGES += sysupgrade.bin
++  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
++
++  # 4G modem (Longsung U9300C) + LuCI
 +  DEVICE_PACKAGES := \
-+    kmod-usb-core kmod-usb2 kmod-usb-ohci \
++    kmod-usb-core kmod-usb2 \
 +    kmod-usb-serial kmod-usb-serial-wwan kmod-usb-serial-option \
-+    kmod-usb-net kmod-usb-net-qmi-wwan kmod-usb-net-cdc-mbim kmod-usb-net-rndis \
-+    usb-modeswitch usbutils \
-+    modemmanager luci-proto-modemmanager
++    kmod-usb-net kmod-usb-net-qmi-wwan \
++    usbutils \
++    modemmanager luci-proto-modemmanager watchcat
 +endef
 +TARGET_DEVICES += caimore_ar9344_cm520_86f
 diff --git a/target/linux/ath79/image/generic.mk b/target/linux/ath79/image/generic.mk
-index c5eb5895e6..017eafc0d5 100644
+index c5eb589..017eafc 100644
 --- a/target/linux/ath79/image/generic.mk
 +++ b/target/linux/ath79/image/generic.mk
 @@ -5,6 +5,7 @@ include ./common-senao.mk
@@ -164,7 +194,7 @@ index c5eb5895e6..017eafc0d5 100644
  DEVICE_VARS += KERNEL_INITRAMFS_PREFIX DAP_SIGNATURE
 diff --git a/target/linux/ath79/patches-6.12/999-usb-serial-add-longsung-u9300c.patch b/target/linux/ath79/patches-6.12/999-usb-serial-add-longsung-u9300c.patch
 new file mode 100644
-index 0000000000..2f2e579b19
+index 0000000..2f2e579
 --- /dev/null
 +++ b/target/linux/ath79/patches-6.12/999-usb-serial-add-longsung-u9300c.patch
 @@ -0,0 +1,30 @@
@@ -174,7 +204,7 @@ index 0000000000..2f2e579b19
 + 	{QMI_GOBI_DEVICE(0x1199, 0x901b)},	/* Sierra Wireless MC7770 */
 + 	{QMI_GOBI_DEVICE(0x12d1, 0x14f1)},	/* Sony Gobi 3000 Composite */
 + 	{QMI_GOBI_DEVICE(0x1410, 0xa021)},	/* Foxconn Gobi 3000 Modem device (Novatel E396) */
-++	{QMI_GOBI_DEVICE(0x1c9e, 0x9b3c)},	/* Longsun U9003C */
+++	{QMI_GOBI_DEVICE(0x1c9e, 0x9b3c)},	/* Longsung U9300C */
 + 
 + 	{ }					/* END */
 + };
@@ -198,6 +228,3 @@ index 0000000000..2f2e579b19
 + 	{ } /* Terminating entry */
 + };
 + MODULE_DEVICE_TABLE(usb, option_ids);
--- 
-2.53.0
-
