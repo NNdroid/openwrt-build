@@ -2,13 +2,13 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=tcp-brutal
-PKG_VERSION:=2.0.0
+PKG_VERSION:=2.0.1
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/HyNetworks/tcp-brutal.git
-PKG_SOURCE_VERSION:=6733b75aa3aaf59f832d3eed27d608dab4c7fdc1
-PKG_SOURCE_DATE:=2026-09-11
+PKG_SOURCE_VERSION:=d2397ff8bca04a29fd2de01cf7d2d4b825224de8
+PKG_SOURCE_DATE:=2026-09-26
 PKG_MIRROR_HASH:=skip
 
 PKG_LICENSE:=GPL-3.0-only
