@@ -18,7 +18,7 @@ new file mode 100644
 index 0000000..eda595b
 --- /dev/null
 +++ b/target/linux/ath79/dts/ar9344_caimore_cm520_86f.dts
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,129 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
 +
 +#include "ar9344.dtsi"
@@ -34,7 +34,7 @@ index 0000000..eda595b
 +	};
 +
 +	chosen {
-+		bootargs = "console=ttyS0,115200 root=31:2 rootfstype=squashfs";
++		bootargs = "console=ttyS0,115200 root=31:3 rootfstype=squashfs";
 +	};
 +
 +	keys {
@@ -67,19 +67,25 @@ index 0000000..eda595b
 +
 +			partition@0 {
 +				label = "u-boot";
-+				reg = <0x000000 0x020000>;
++				reg = <0x000000 0x040000>;
 +				read-only;
 +			};
 +
-+			/* Breed bootm's the uImage kernel at 0x20000 */
-+			partition@20000 {
-+				label = "kernel";
-+				reg = <0x020000 0x300000>;
++			partition@40000 {
++				label = "u-boot-env";
++				reg = <0x040000 0x010000>;
++				read-only;
 +			};
 +
-+			partition@320000 {
++			/* Breed bootm's the uImage kernel at 0x50000 */
++			partition@50000 {
++				label = "kernel";
++				reg = <0x050000 0x300000>;
++			};
++
++			partition@350000 {
 +				label = "rootfs";
-+				reg = <0x320000 0xcd0000>;
++				reg = <0x350000 0xca0000>;
 +			};
 +
 +			art: partition@ff0000 {
@@ -158,8 +164,8 @@ index 0000000..a565e51
 +  KERNEL := kernel-bin | append-dtb | lzma | uImage lzma
 +  KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma | uImage lzma
 +
-+  # Breed layout: firmware partition is 0x20000-0xff0000 (16192k)
-+  IMAGE_SIZE := 16192k
++  # Breed layout: firmware partition is 0x50000-0xff0000 (16000k)
++  IMAGE_SIZE := 16000k
 +  KERNEL_SIZE := 3072k
 +
 +  IMAGES += sysupgrade.bin
